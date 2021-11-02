@@ -1,0 +1,183 @@
+version: "3"
+
+networks:
+ kong-net:
+  driver: bridge
+
+services:
+  #######################################
+  # Postgres: The database used by Kong
+  #######################################
+  kong-database:
+    image: postgres:9.6
+    restart: on-failure
+    networks:
+      - kong-net
+    environment:
+      POSTGRES_USER: kong
+      POSTGRES_DB: kong
+      POSTGRES_PASSWORD: 12345678
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "kong"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  #######################################
+  # Kong database migration
+  #######################################
+  kong-migration:
+    image: kong:latest
+    command: "kong migrations bootstrap"
+    networks:
+      - kong-net
+    restart: on-failure
+    environment:
+      KONG_PG_HOST: kong-database
+      KONG_PG_PASSWORD: 12345678
+    links:
+      - kong-database
+    depends_on:
+      - kong-database
+
+  #######################################
+  # Kong: The API Gateway
+  #######################################
+  kong:
+    image: kong:latest
+    restart: on-failure
+    networks:
+      - kong-net
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: 12345678
+      KONG_CASSANDRA_CONTACT_POINTS: kong-database
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
+      KONG_PROXY_LISTEN_SSL: 0.0.0.0:8443
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+    depends_on:
+      - kong-migration
+      - kong-database
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://kong:8001"]
+      interval: 5s
+      timeout: 2s
+      retries: 15
+    ports:
+      - "8001:8001"
+      - "8000:8000"
+
+  #######################################
+  # Konga database prepare
+  #######################################
+  konga-prepare:
+    image: pantsel/konga:next
+    command: "-c prepare -a postgres -u postgresql://kong:12345678@kong-database:5432/konga_db"
+    networks:
+      - kong-net
+    restart: on-failure
+    links:
+      - kong-database
+    depends_on:
+      - kong-database
+
+  #######################################
+  # Konga: Kong GUI
+  #######################################
+  konga:
+    image: pantsel/konga:next
+    restart: on-failure
+    networks:
+        - kong-net
+    environment:
+      DB_ADAPTER: postgres
+      DB_HOST: kong-database
+      DB_USER: kong
+      DB_PASSWORD: 12345678
+      TOKEN_SECRET: km1GUr4RkcQD7DewhJPNXrCuZwcKmqjb
+      DB_DATABASE: konga_db
+      NODE_ENV: development
+    depends_on:
+      - kong-database
+      - konga-prepare
+    ports:
+      - "1337:1337"
+
+  service-one:
+    build:
+      context: ./service-one
+      dockerfile: .docker/Dockerfile
+    volumes:
+      - "./service-one:/var/www/html"
+    depends_on:
+      - kong
+    ports:
+      - "81:80"
+    networks:
+      - kong-net
+
+  database-service-one:
+    image: mysql:5.7.26
+    environment:
+      - MYSQL_ROOT_PASSWORD=123456
+      - MYSQL_DATABASE=usuarios
+      - TZ=America/Sao_Paulo
+    volumes:
+      - ./database-service-one:/var/lib/mysql
+    networks:
+      - kong-net
+
+  service-two:
+    build:
+      context: ./service-two
+      dockerfile: .docker/Dockerfile
+    volumes:
+      - "./service-two:/var/www/html"
+    depends_on:
+      - kong
+    ports:
+      - "82:80"
+    networks:
+      - kong-net
+
+  database-service-two:
+    image: mysql:5.7.26
+    environment:
+      - MYSQL_ROOT_PASSWORD=123456
+      - MYSQL_DATABASE=scores
+      - TZ=America/Sao_Paulo
+    volumes:
+      - ./database-service-two:/var/lib/mysql
+    networks:
+      - kong-net
+
+  service-three:
+    build:
+      context: ./service-three
+      dockerfile: .docker/Dockerfile
+    volumes:
+      - "./service-three:/opt/www"
+    depends_on:
+      - kong
+    ports:
+      - "83:9501"
+    networks:
+      - kong-net
+      
+
+  database-service-three:
+    image: mysql:5.7.26
+    environment:
+      - MYSQL_ROOT_PASSWORD=123456
+      - MYSQL_DATABASE=events
+      - TZ=America/Sao_Paulo
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./database-service-three:/var/lib/mysql
+    networks:
+      - kong-net
